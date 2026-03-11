@@ -1,0 +1,170 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Scanner AI + History</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 500px; margin: auto; background: white; padding: 25px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        h2 { color: #2c3e50; margin-top: 0; }
+        #video { width: 100%; border-radius: 15px; background: #000; margin-bottom: 15px; display: block; }
+        .result-card { display: none; padding: 15px; border: 1px solid #eee; border-radius: 15px; background: #fff; margin-top: 15px; }
+        .percentage-box { display: flex; justify-content: space-around; margin: 20px 0; background: #fafafa; padding: 15px; border-radius: 12px; }
+        .stat-val { font-size: 22px; font-weight: 800; }
+        .healthy { color: #27ae60; } .unhealthy { color: #e74c3c; } .uncertain { color: #7f8c8d; }
+        .impact { text-align: left; font-size: 14px; background: #eef7ff; padding: 12px; border-radius: 10px; border-left: 4px solid #3498db; }
+        button { background: #3498db; color: white; border: none; padding: 12px 20px; border-radius: 10px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
+        .history-section { margin-top: 30px; text-align: left; }
+        .history-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }
+        .history-item:last-child { border-bottom: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🍎 Health Scanner AI</h2>
+    
+    <video id="video"></video>
+    <button id="scanBtn" onclick="startScanner()">Start Camera Scanner</button>
+
+    <div id="result" class="result-card">
+        <h3 id="productName" style="margin-top:0">Product Name</h3>
+        <canvas id="healthChart" style="max-height: 200px; margin-bottom: 15px;"></canvas>
+        
+        <div class="percentage-box">
+            <div class="stat"><div id="h-val" class="stat-val healthy">0%</div><div style="font-size:12px">Healthy</div></div>
+            <div class="stat"><div id="u-val" class="stat-val unhealthy">0%</div><div style="font-size:12px">Unhealthy</div></div>
+            <div class="stat"><div id="un-val" class="stat-val uncertain">0%</div><div style="font-size:12px">Uncertain</div></div>
+        </div>
+
+        <div class="impact">
+            <strong>Short-Term:</strong> <span id="shortTerm">...</span><br>
+            <strong>Long-Term:</strong> <span id="longTerm">...</span>
+        </div>
+        <button onclick="resetScanner()" style="background:#95a5a6">Scan Again</button>
+    </div>
+
+    <div class="history-section">
+        <h4>Recent Scans</h4>
+        <div id="historyList"></div>
+        <button onclick="clearHistory()" style="background:none; color:#e74c3c; font-size:12px; border:1px solid #e74c3c; margin-top:15px">Clear History</button>
+    </div>
+</div>
+
+<script>
+    const codeReader = new ZXing.BrowserMultiFormatReader();
+    let chartInstance = null;
+
+    window.onload = loadHistory;
+
+    function startScanner() {
+        document.getElementById('scanBtn').innerText = "Align Barcode in View...";
+        codeReader.decodeFromVideoDevice(null, 'video', (result, err) => {
+            if (result) {
+                codeReader.reset();
+                analyzeBarcode(result.text);
+            }
+        });
+    }
+
+    function resetScanner() {
+        document.getElementById('result').style.display = 'none';
+        document.getElementById('video').style.display = 'block';
+        document.getElementById('scanBtn').style.display = 'block';
+        startScanner();
+    }
+
+    async function analyzeBarcode(barcode) {
+        document.getElementById('video').style.display = 'none';
+        document.getElementById('scanBtn').style.display = 'none';
+        
+        try {
+            const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`);
+            const data = await res.json();
+
+            if (data.status === 1) {
+                const p = data.product;
+                const name = p.product_name || "Unknown Product";
+                const nutrients = p.nutriments || {};
+                const ingredients = (p.ingredients_text || "").toLowerCase();
+
+                // Algorithm Logic
+                let h = (nutrients.proteins_100g || 0) * 4 + (nutrients.fiber_100g || 0) * 6;
+                let u = (nutrients.sugars_100g || 0) * 5 + (nutrients.salt_100g || 0) * 25 + (nutrients.fat_100g || 0) * 2;
+                let un = ingredients.includes("flavor") || ingredients.includes("color") || ingredients.includes("preservative") ? 20 : 5;
+
+                let total = h + u + un;
+                if(total === 0) total = 1;
+                
+                let h_pct = Math.round((h / total) * 100);
+                let u_pct = Math.round((u / total) * 100);
+                let un_pct = 100 - (h_pct + u_pct);
+
+                // UI Updates
+                document.getElementById('result').style.display = 'block';
+                document.getElementById('productName').innerText = name;
+                document.getElementById('h-val').innerText = h_pct + "%";
+                document.getElementById('u-val').innerText = u_pct + "%";
+                document.getElementById('un-val').innerText = un_pct + "%";
+                
+                document.getElementById('shortTerm').innerText = (nutrients.sugars_100g > 15) ? "Spikes insulin levels quickly." : "Gradual energy release.";
+                document.getElementById('longTerm').innerText = (u_pct > 40) ? "Frequent use linked to lifestyle diseases." : "Fits well in a balanced diet.";
+
+                renderChart(h_pct, u_pct, un_pct);
+                saveToHistory(name, h_pct);
+            } else {
+                alert("Barcode not found in database.");
+                resetScanner();
+            }
+        } catch (e) {
+            alert("Error connecting to database.");
+            resetScanner();
+        }
+    }
+
+    function renderChart(h, u, un) {
+        if (chartInstance) chartInstance.destroy();
+        const ctx = document.getElementById('healthChart').getContext('2d');
+        chartInstance = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Healthy', 'Unhealthy', 'Uncertain'],
+                datasets: [{
+                    data: [h, u, un],
+                    backgroundColor: ['#27ae60', '#e74c3c', '#bdc3c7'],
+                    borderWidth: 0
+                }]
+            },
+            options: { cutout: '70%', plugins: { legend: { display: false } } }
+        });
+    }
+
+    function saveToHistory(name, score) {
+        let history = JSON.parse(localStorage.getItem('foodHistory') || '[]');
+        history.unshift({ name, score, date: new Date().toLocaleDateString() });
+        history = history.slice(0, 5); // Keep last 5
+        localStorage.setItem('foodHistory', JSON.stringify(history));
+        loadHistory();
+    }
+
+    function loadHistory() {
+        const list = document.getElementById('historyList');
+        const history = JSON.parse(localStorage.getItem('foodHistory') || '[]');
+        list.innerHTML = history.length ? '' : '<p style="font-size:12px; color:#999">No recent scans.</p>';
+        history.forEach(item => {
+            list.innerHTML += `<div class="history-item"><span>${item.name}</span><strong>${item.score}% Health</strong></div>`;
+        });
+    }
+
+    function clearHistory() {
+        localStorage.removeItem('foodHistory');
+        loadHistory();
+    }
+</script>
+
+</body>
+</html>
